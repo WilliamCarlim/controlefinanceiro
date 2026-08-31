@@ -45,9 +45,16 @@ export async function handleIncomingMessage(
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid || remoteJid === 'status@broadcast') return;
 
+    // Se for mensagem de grupo (@g.us), registra no log para facilitar a identificação do TARGET_GROUP_JID
+    if (remoteJid.endsWith('@g.us') && remoteJid !== config.targetGroupJid) {
+      logger.info(
+        { groupJid: remoteJid, sender: msg.pushName || 'Desconhecido' },
+        `📢 Mensagem recebida no grupo [${remoteJid}]. Se este for o seu grupo de finanças, configure TARGET_GROUP_JID=${remoteJid} no Render.`
+      );
+    }
+
     // Filtro Estrito: Apenas processa se for exatamente o TARGET_GROUP_JID configurado
     if (!config.targetGroupJid || remoteJid !== config.targetGroupJid) {
-      // Ignora silenciosamente DMs e outros grupos
       return;
     }
 
