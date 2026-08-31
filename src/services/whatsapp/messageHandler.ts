@@ -21,6 +21,31 @@ import { toZonedTime } from 'date-fns-tz';
 
 const TIME_ZONE = 'America/Sao_Paulo';
 
+// Armazena IDs de mensagens geradas pelo próprio bot para evitar loops infinitos
+const botMessageIds = new Set<string>();
+
+function recordBotMessageId(id?: string | null) {
+  if (!id) return;
+  botMessageIds.add(id);
+  if (botMessageIds.size > 1000) {
+    const firstKey = botMessageIds.values().next().value;
+    if (firstKey) botMessageIds.delete(firstKey);
+  }
+}
+
+async function sendBotReply(
+  sock: WASocket,
+  remoteJid: string,
+  content: any,
+  options?: any
+) {
+  const sent = await sock.sendMessage(remoteJid, content, options);
+  if (sent?.key?.id) {
+    recordBotMessageId(sent.key.id);
+  }
+  return sent;
+}
+
 /**
  * Formata data para o padrão brasileiro DD/MM/YYYY
  */
@@ -38,18 +63,49 @@ export async function handleIncomingMessage(
   msg: proto.IWebMessageInfo
 ): Promise<void> {
   try {
-    // Ignora mensagens do próprio bot
-    if (msg.key.fromMe) return;
+    const msgId = msg.key?.id;
+    if (msgId && botMessageIds.has(msgId)) {
+      return;
+    }
 
-    // Ignora mensagens sem conteúdo ou de status broadcast
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid || remoteJid === 'status@broadcast') return;
 
-    // Se for mensagem de grupo (@g.us), registra no log para facilitar a identificação do TARGET_GROUP_JID
-    if (remoteJid.endsWith('@g.us') && remoteJid !== config.targetGroupJid) {
+    const messageContent = msg.message;
+    if (!messageContent) return;
+
+    // Extração de Texto
+    const text =
+      messageContent.conversation ||
+      messageContent.extendedTextMessage?.text ||
+      messageContent.imageMessage?.caption ||
+      '';
+
+    const trimmedText = text.trim();
+
+    // Se a mensagem começar com os padrões de resposta do bot, ignora para evitar eco
+    if (
+      trimmedText.startsWith('✅ *Lançamento') ||
+      trimmedText.startsWith('📊 *Resumo') ||
+      trimmedText.startsWith('📑 *Últimos') ||
+      trimmedText.startsWith('🗑️ *Lançamento') ||
+      trimmedText.startsWith('🤖 *Guia') ||
+      trimmedText.startsWith('⚠️') ||
+      trimmedText.startsWith('ℹ️')
+    ) {
+      return;
+    }
+
+    // Se for mensagem de qualquer grupo (@g.us), registra com destaque no log
+    if (remoteJid.endsWith('@g.us')) {
       logger.info(
-        { groupJid: remoteJid, sender: msg.pushName || 'Desconhecido' },
-        `📢 Mensagem recebida no grupo [${remoteJid}]. Se este for o seu grupo de finanças, configure TARGET_GROUP_JID=${remoteJid} no Render.`
+        {
+          groupJid: remoteJid,
+          sender: msg.pushName || 'Você',
+          text: trimmedText || (messageContent.audioMessage ? '[Áudio]' : '[Mídia]'),
+          fromMe: msg.key.fromMe,
+        },
+        `📢 [MENSAGEM DE GRUPO] ID do Grupo: ${remoteJid}`
       );
     }
 
@@ -58,28 +114,16 @@ export async function handleIncomingMessage(
       return;
     }
 
-    const messageContent = msg.message;
-    if (!messageContent) return;
-
-    // 1. Extração de Texto
-    const text =
-      messageContent.conversation ||
-      messageContent.extendedTextMessage?.text ||
-      messageContent.imageMessage?.caption ||
-      '';
-
-    // 2. Extração de Áudio
+    // Extração de Áudio
     const isAudio = Boolean(messageContent.audioMessage);
-
     if (isAudio) {
       await handleAudioMessage(sock, msg);
       return;
     }
 
-    const trimmedText = text.trim();
     if (!trimmedText) return;
 
-    // 3. Processamento de Comandos Rápidos
+    // Processamento de Comandos Rápidos
     const lower = trimmedText.toLowerCase();
 
     if (lower === '/saldo' || lower === '/resumo') {
@@ -104,7 +148,7 @@ export async function handleIncomingMessage(
       return;
     }
 
-    // 4. Se não for comando, processa como texto financeiro via Gemini AI
+    // Se não for comando, processa como texto financeiro via Gemini AI
     await handleTextMessageAI(sock, remoteJid, trimmedText, msg);
   } catch (error) {
     logger.error({ error }, 'Erro ao processar mensagem do WhatsApp.');
@@ -129,7 +173,7 @@ async function handleSaldoCommand(
     `💰 *Saldo Líquido:* ${balanceEmoji} *${formatBRL(summary.balance)}*\n\n` +
     `_Total de ${summary.count} lançamentos neste mês._`;
 
-  await sock.sendMessage(remoteJid, { text: replyText }, { quoted: quotedMsg });
+  await sendBotReply(sock, remoteJid, { text: replyText }, { quoted: quotedMsg });
 }
 
 /**
@@ -143,7 +187,8 @@ async function handleExtratoCommand(
   const transactions = await getRecentTransactions(5);
 
   if (transactions.length === 0) {
-    await sock.sendMessage(
+    await sendBotReply(
+      sock,
       remoteJid,
       { text: 'ℹ️ Nenhum lançamento encontrado no histórico.' },
       { quoted: quotedMsg }
@@ -166,7 +211,7 @@ async function handleExtratoCommand(
 
   text += `_Para excluir algum lançamento, envie: /deletar ID_`;
 
-  await sock.sendMessage(remoteJid, { text: text.trim() }, { quoted: quotedMsg });
+  await sendBotReply(sock, remoteJid, { text: text.trim() }, { quoted: quotedMsg });
 }
 
 /**
@@ -179,7 +224,8 @@ async function handleDeleteCommand(
   quotedMsg: proto.IWebMessageInfo
 ): Promise<void> {
   if (!targetId) {
-    await sock.sendMessage(
+    await sendBotReply(
+      sock,
       remoteJid,
       { text: '⚠️ Por favor informe o ID da transação. Exemplo: `/deletar abcd1234`' },
       { quoted: quotedMsg }
@@ -190,7 +236,8 @@ async function handleDeleteCommand(
   const deleted = await deleteTransaction(targetId);
 
   if (!deleted) {
-    await sock.sendMessage(
+    await sendBotReply(
+      sock,
       remoteJid,
       { text: `⚠️ Nenhum lançamento ativo encontrado com o ID: \`${targetId}\`` },
       { quoted: quotedMsg }
@@ -209,7 +256,7 @@ async function handleDeleteCommand(
     `🆔 \`${shortId}\`\n\n` +
     `Saldo atual do mês: *${formatBRL(summary.balance)}*`;
 
-  await sock.sendMessage(remoteJid, { text: replyText }, { quoted: quotedMsg });
+  await sendBotReply(sock, remoteJid, { text: replyText }, { quoted: quotedMsg });
 }
 
 /**
@@ -235,7 +282,7 @@ async function handleAjudaCommand(
     `• */deletar <ID>* - Cancelar um lançamento\n` +
     `• */ajuda* - Exibe este menu`;
 
-  await sock.sendMessage(remoteJid, { text: replyText }, { quoted: quotedMsg });
+  await sendBotReply(sock, remoteJid, { text: replyText }, { quoted: quotedMsg });
 }
 
 /**
@@ -251,7 +298,6 @@ async function handleTextMessageAI(
     const aiResult = await extractFinancialDataFromText(text);
 
     if (!aiResult.is_financial_entry || !aiResult.amount) {
-      // Se não for lançamento financeiro, ignora para não poluir o grupo
       return;
     }
 
@@ -279,7 +325,7 @@ async function handleTextMessageAI(
       `🆔 \`${shortId}\`\n\n` +
       `Saldo do mês: *${formatBRL(summary.balance)}*`;
 
-    await sock.sendMessage(remoteJid, { text: confirmationMsg }, { quoted: quotedMsg });
+    await sendBotReply(sock, remoteJid, { text: confirmationMsg }, { quoted: quotedMsg });
   } catch (error) {
     logger.error({ error, text }, 'Falha ao processar texto com Gemini.');
   }
@@ -342,7 +388,7 @@ async function handleAudioMessage(
       `🆔 \`${shortId}\`\n\n` +
       `Saldo do mês: *${formatBRL(summary.balance)}*`;
 
-    await sock.sendMessage(remoteJid, { text: confirmationMsg }, { quoted: msg });
+    await sendBotReply(sock, remoteJid, { text: confirmationMsg }, { quoted: msg });
   } catch (error) {
     logger.error({ error }, 'Falha ao processar áudio do WhatsApp com Gemini.');
   }

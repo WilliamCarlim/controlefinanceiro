@@ -139,8 +139,6 @@ class WhatsAppService extends EventEmitter {
 
       // Evento de mensagens recebidas
       sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-
         for (const msg of messages) {
           try {
             await handleIncomingMessage(sock, msg);
