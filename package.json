@@ -1,0 +1,52 @@
+{
+  "name": "controlefinanceiro-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot de Controle Financeiro Pessoal via WhatsApp integrado com Baileys, PostgreSQL e Google Gemini AI",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate && tsc",
+    "start": "prisma migrate deploy && node dist/server.js",
+    "start:local": "node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "gemini-ai",
+    "finance",
+    "financas",
+    "bot",
+    "prisma",
+    "postgresql"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "@prisma/client": "^5.22.0",
+    "@whiskeysockets/baileys": "^6.7.13",
+    "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.5",
+    "@types/qrcode": "^1.5.5",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}

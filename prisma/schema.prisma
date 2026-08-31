@@ -1,0 +1,39 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+model Transaction {
+  id            String          @id @default(uuid())
+  type          TransactionType
+  amount        Decimal         @db.Decimal(12, 2)
+  category      String
+  paymentMethod String          @default("Não especificado") @map("payment_method")
+  description   String
+  date          DateTime        @default(now())
+  rawMessage    String?         @map("raw_message")
+  isDeleted     Boolean         @default(false) @map("is_deleted")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@index([isDeleted])
+  @@map("transactions")
+}
+
+model WhatsAppSession {
+  id        String   @id // Ex: 'creds' ou 'session_main' ou 'app-state-sync-key-*'
+  data      Json     // Dados de credenciais e chaves do Baileys serializados
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("whatsapp_sessions")
+}
