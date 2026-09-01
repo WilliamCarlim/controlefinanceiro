@@ -30,6 +30,36 @@ router.get('/api/status', (req: Request, res: Response) => {
 });
 
 /**
+ * Reinicia a sessão do WhatsApp e gera novo QR Code
+ */
+router.post('/api/reset-session', async (req: Request, res: Response) => {
+  if (!isAuthorized(req)) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  try {
+    await whatsAppService.resetSession();
+    res.json({ success: true, message: 'Sessão reiniciada. Novo QR Code sendo gerado.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao reiniciar sessão.' });
+  }
+});
+
+router.get('/reset-session', async (req: Request, res: Response) => {
+  const token = (req.query.token as string) || '';
+  if (token !== config.adminWebToken) {
+    res.status(401).send(renderUnauthorizedPage());
+    return;
+  }
+  try {
+    await whatsAppService.resetSession();
+    res.redirect(`/?token=${encodeURIComponent(token)}`);
+  } catch (err) {
+    res.redirect(`/?token=${encodeURIComponent(token)}`);
+  }
+});
+
+/**
  * Server-Sent Events (SSE) para atualização do QR Code e status em tempo real
  */
 router.get('/api/events', (req: Request, res: Response) => {
@@ -247,6 +277,14 @@ function renderDashboardHtml(
             <div><span class="text-slate-500">Target Group:</span> <span class="text-emerald-400">${state.targetGroupJid || 'Não configurado'}</span></div>
             <div><span class="text-slate-500">Status da Sessão:</span> <span class="text-emerald-400">Persistida no PostgreSQL</span></div>
           </div>
+
+          <button 
+            onclick="resetSession()" 
+            id="btn-reset"
+            class="mt-6 inline-flex items-center px-4 py-2.5 border border-slate-700 hover:border-red-500/50 bg-slate-800 hover:bg-red-500/10 text-slate-300 hover:text-red-400 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer"
+          >
+            🔄 Desconectar e Gerar Novo QR Code
+          </button>
         </div>
 
         <div id="view-qr" class="${state.status !== 'CONNECTED' ? 'flex' : 'hidden'} flex-col items-center justify-center py-4">
@@ -296,7 +334,8 @@ function renderDashboardHtml(
               <h4 class="font-semibold text-white mb-1">2. Comandos Rápidos</h4>
               <p class="text-xs text-slate-400 space-y-1">
                 <code class="text-emerald-400 font-mono">/saldo</code> ou <code class="text-emerald-400 font-mono">/resumo</code> - Totais e saldo disponível<br>
-                <code class="text-emerald-400 font-mono">/extrato</code> - Ver últimos 5 lançamentos<br>
+                <code class="text-emerald-400 font-mono">/extrato</code> - Ver últimos 30 dias<br>
+                <code class="text-emerald-400 font-mono">/extrato 08/2026</code> - Extrato de um mês<br>
                 <code class="text-emerald-400 font-mono">/deletar &lt;ID&gt;</code> - Cancelar lançamento<br>
                 <code class="text-emerald-400 font-mono">/ajuda</code> - Menu de comandos
               </p>
@@ -373,6 +412,17 @@ function renderDashboardHtml(
         qrImage.classList.add('hidden');
         qrSpinner.classList.remove('hidden');
         qrSpinner.classList.add('flex');
+      }
+    }
+
+    async function resetSession() {
+      if (!confirm('Deseja desconectar a sessão atual e gerar um novo QR Code?')) return;
+      const btn = document.getElementById('btn-reset');
+      if (btn) btn.textContent = '🔄 Desconectando...';
+      try {
+        await fetch('/api/reset-session?token=' + encodeURIComponent(token), { method: 'POST' });
+      } catch (err) {
+        console.error('Erro ao reiniciar sessão:', err);
       }
     }
   </script>

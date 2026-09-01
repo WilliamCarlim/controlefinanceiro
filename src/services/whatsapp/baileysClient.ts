@@ -186,6 +186,24 @@ class WhatsAppService extends EventEmitter {
     this.emit('stateChange', this.getState());
   }
 
+  public async resetSession(): Promise<void> {
+    logger.warn('🔄 Reiniciando sessão do WhatsApp e gerando novo QR Code...');
+    if (this.presenceTimer) clearInterval(this.presenceTimer);
+    if (this.sock) {
+      try {
+        this.sock.end(undefined);
+      } catch {
+        // ignore
+      }
+      this.sock = null;
+    }
+    const { clearSession } = await usePrismaAuthState('session_main');
+    await clearSession();
+    this.setStatus('DISCONNECTED');
+    this.isConnecting = false;
+    await this.start();
+  }
+
   public getSocket(): WASocket | null {
     return this.sock;
   }

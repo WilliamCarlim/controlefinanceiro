@@ -11,7 +11,7 @@ import { logger } from '../../lib/logger.js';
 /**
  * Custom Prisma Auth State for Baileys
  * Persiste credenciais e chaves criptográficas diretamente no PostgreSQL.
- * Garante que restarts no Render (ou qualquer ambiente efêmero) não percam a sessão.
+ * Garante que restarts no Render não percam a sessão.
  */
 export async function usePrismaAuthState(
   sessionId = 'session_main'
@@ -64,7 +64,7 @@ export async function usePrismaAuthState(
     }
   };
 
-  // Função para limpar a sessão em caso de logout
+  // Função para limpar a sessão em caso de logout ou reset
   const clearSession = async (): Promise<void> => {
     try {
       await prisma.whatsAppSession.deleteMany({
@@ -102,7 +102,6 @@ export async function usePrismaAuthState(
             });
 
             for (const record of records) {
-              // Extrai o id original a partir do prefixo `${sessionId}:${type}:`
               const prefix = `${sessionId}:${type}:`;
               const originalId = record.id.startsWith(prefix)
                 ? record.id.substring(prefix.length)
@@ -124,7 +123,8 @@ export async function usePrismaAuthState(
         },
 
         set: async (data: any): Promise<void> => {
-          const ops: Promise<any>[] = [];
+          const upsertOps: { id: string; data: any }[] = [];
+          const deleteKeys: string[] = [];
 
           for (const type in data) {
             const categoryData = data[type];
@@ -136,25 +136,28 @@ export async function usePrismaAuthState(
                 const serialized = JSON.parse(
                   JSON.stringify(value, BufferJSON.replacer)
                 );
-                ops.push(
-                  prisma.whatsAppSession.upsert({
-                    where: { id: key },
-                    update: { data: serialized },
-                    create: { id: key, data: serialized },
-                  })
-                );
+                upsertOps.push({ id: key, data: serialized });
               } else {
-                ops.push(
-                  prisma.whatsAppSession.deleteMany({
-                    where: { id: key },
-                  })
-                );
+                deleteKeys.push(key);
               }
             }
           }
 
           try {
-            await Promise.all(ops);
+            if (deleteKeys.length > 0) {
+              await prisma.whatsAppSession.deleteMany({
+                where: { id: { in: deleteKeys } },
+              });
+            }
+
+            // Executa upserts sequencialmente em pequenos batches para não sobrecarregar o pool
+            for (const item of upsertOps) {
+              await prisma.whatsAppSession.upsert({
+                where: { id: item.id },
+                update: { data: item.data },
+                create: { id: item.id, data: item.data },
+              });
+            }
           } catch (error) {
             logger.error({ error }, 'Erro ao salvar chaves criptográficas no PostgreSQL.');
           }
