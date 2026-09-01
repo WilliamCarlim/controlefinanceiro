@@ -171,7 +171,7 @@ export async function handleIncomingMessage(
 }
 
 /**
- * Responde ao comando /saldo ou /resumo
+ * Responde ao comando /saldo ou /resumo trazendo saldo anterior + mês + saldo acumulado
  */
 async function handleSaldoCommand(
   sock: WASocket,
@@ -179,14 +179,17 @@ async function handleSaldoCommand(
   quotedMsg: proto.IWebMessageInfo
 ): Promise<void> {
   const summary = await getMonthSummary();
-  const balanceEmoji = summary.balance >= 0 ? '🟢' : '🔴';
+  const netEmoji = summary.monthNet >= 0 ? '📈' : '📉';
+  const totalEmoji = summary.totalBalance >= 0 ? '🟢' : '🔴';
 
   const replyText =
-    `📊 *Resumo Financeiro do Mês (${summary.monthName})*\n\n` +
-    `🟢 *Receitas:* ${formatBRL(summary.totalIncome)}\n` +
-    `🔴 *Despesas:* ${formatBRL(summary.totalExpense)}\n` +
-    `💰 *Saldo Líquido:* ${balanceEmoji} *${formatBRL(summary.balance)}*\n\n` +
-    `_Total de ${summary.count} lançamentos neste mês._`;
+    `📊 *Resumo Financeiro - ${summary.monthName}/${summary.year}*\n\n` +
+    `💵 *Saldo Anterior:* ${formatBRL(summary.previousBalance)}\n` +
+    `🟢 *Receitas do Mês:* +${formatBRL(summary.monthIncome)}\n` +
+    `🔴 *Despesas do Mês:* -${formatBRL(summary.monthExpense)}\n` +
+    `${netEmoji} *Resultado do Mês:* ${formatBRL(summary.monthNet)}\n\n` +
+    `💰 *Saldo Total Disponível:* ${totalEmoji} *${formatBRL(summary.totalBalance)}*\n\n` +
+    `_Lançamentos em ${summary.monthName}: ${summary.count}_`;
 
   await sendBotReply(sock, remoteJid, { text: replyText }, { quoted: quotedMsg });
 }
@@ -262,6 +265,7 @@ async function handleDeleteCommand(
 
   const summary = await getMonthSummary();
   const shortId = deleted.id.substring(0, 8);
+  const totalEmoji = summary.totalBalance >= 0 ? '🟢' : '🔴';
 
   const replyText =
     `🗑️ *Lançamento Cancelado com Sucesso!*\n\n` +
@@ -269,7 +273,7 @@ async function handleDeleteCommand(
     `💰 *Valor:* ${formatBRL(deleted.amount)}\n` +
     `📅 *Data:* ${formatDateBR(deleted.date)}\n` +
     `🆔 \`${shortId}\`\n\n` +
-    `Saldo atual do mês: *${formatBRL(summary.balance)}*`;
+    `💰 *Saldo Total Disponível:* ${totalEmoji} *${formatBRL(summary.totalBalance)}*`;
 
   await sendBotReply(sock, remoteJid, { text: replyText }, { quoted: quotedMsg });
 }
@@ -292,7 +296,7 @@ async function handleAjudaCommand(
     `• _"Almoço 42 no crédito"_\n` +
     `• _"Gasolina 150 reais ontem"_\n\n` +
     `⚡ *Comandos Rápidos:*\n` +
-    `• */saldo* ou */resumo* - Saldo e totais do mês\n` +
+    `• */saldo* ou */resumo* - Saldo anterior, do mês e total disponível\n` +
     `• */extrato* - Ver os últimos 5 lançamentos\n` +
     `• */deletar <ID>* - Cancelar um lançamento\n` +
     `• */ajuda* - Exibe este menu`;
@@ -329,6 +333,7 @@ async function handleTextMessageAI(
     const summary = await getMonthSummary();
     const formattedDate = formatDateBR(transaction.date);
     const shortId = transaction.id.substring(0, 8);
+    const totalEmoji = summary.totalBalance >= 0 ? '🟢' : '🔴';
 
     const confirmationMsg =
       `✅ *Lançamento Registrado!*\n\n` +
@@ -338,7 +343,8 @@ async function handleTextMessageAI(
       `💳 *Pagamento:* ${transaction.paymentMethod}\n` +
       `📅 *Data:* ${formattedDate}\n` +
       `🆔 \`${shortId}\`\n\n` +
-      `Saldo do mês: *${formatBRL(summary.balance)}*`;
+      `💰 *Saldo Total Disponível:* ${totalEmoji} *${formatBRL(summary.totalBalance)}*\n` +
+      `_(Mês: ${formatBRL(summary.monthNet)} | Anterior: ${formatBRL(summary.previousBalance)})_`;
 
     await sendBotReply(sock, remoteJid, { text: confirmationMsg }, { quoted: quotedMsg });
   } catch (error) {
@@ -392,6 +398,7 @@ async function handleAudioMessage(
     const summary = await getMonthSummary();
     const formattedDate = formatDateBR(transaction.date);
     const shortId = transaction.id.substring(0, 8);
+    const totalEmoji = summary.totalBalance >= 0 ? '🟢' : '🔴';
 
     const confirmationMsg =
       `✅ *Lançamento Registrado (via Áudio)!*\n\n` +
@@ -401,7 +408,8 @@ async function handleAudioMessage(
       `💳 *Pagamento:* ${transaction.paymentMethod}\n` +
       `📅 *Data:* ${formattedDate}\n` +
       `🆔 \`${shortId}\`\n\n` +
-      `Saldo do mês: *${formatBRL(summary.balance)}*`;
+      `💰 *Saldo Total Disponível:* ${totalEmoji} *${formatBRL(summary.totalBalance)}*\n` +
+      `_(Mês: ${formatBRL(summary.monthNet)} | Anterior: ${formatBRL(summary.previousBalance)})_`;
 
     await sendBotReply(sock, remoteJid, { text: confirmationMsg }, { quoted: msg });
   } catch (error) {

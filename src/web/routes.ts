@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import { config } from '../config/env.js';
 import { whatsAppService, WhatsAppState } from '../services/whatsapp/baileysClient.js';
 import { prisma } from '../lib/prisma.js';
-import { getMonthSummary } from '../services/finance/transactionService.js';
+import { getMonthSummary, MonthSummary } from '../services/finance/transactionService.js';
 
 export const router = express.Router();
 
@@ -73,21 +73,28 @@ router.get('/', async (req: Request, res: Response) => {
 
   const state = whatsAppService.getState();
   let totalTransactions = 0;
-  let currentMonthSummary = { balance: 0, totalIncome: 0, totalExpense: 0 };
+  let summary: MonthSummary = {
+    previousBalance: 0,
+    monthIncome: 0,
+    monthExpense: 0,
+    monthNet: 0,
+    totalBalance: 0,
+    totalIncome: 0,
+    totalExpense: 0,
+    balance: 0,
+    monthName: 'Mês Atual',
+    year: new Date().getFullYear(),
+    count: 0,
+  };
 
   try {
     totalTransactions = await prisma.transaction.count({ where: { isDeleted: false } });
-    const summary = await getMonthSummary();
-    currentMonthSummary = {
-      balance: summary.balance,
-      totalIncome: summary.totalIncome,
-      totalExpense: summary.totalExpense,
-    };
+    summary = await getMonthSummary();
   } catch (err) {
     // Ignora erro se o banco ainda estiver inicializando
   }
 
-  res.send(renderDashboardHtml(state, token, totalTransactions, currentMonthSummary));
+  res.send(renderDashboardHtml(state, token, totalTransactions, summary));
 });
 
 function renderUnauthorizedPage(): string {
@@ -121,9 +128,9 @@ function renderUnauthorizedPage(): string {
       </div>
       <button 
         type="submit" 
-        class="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-xl transition duration-200 shadow-lg shadow-emerald-900/30 text-sm"
+        class="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-semibold rounded-xl text-sm transition-all duration-200 shadow-lg shadow-emerald-500/20 active:scale-[0.98]"
       >
-        Entrar no Painel
+        Acessar Painel
       </button>
     </form>
   </div>
@@ -135,8 +142,11 @@ function renderDashboardHtml(
   state: WhatsAppState,
   token: string,
   totalTransactions: number,
-  summary: { balance: number; totalIncome: number; totalExpense: number }
+  summary: MonthSummary
 ): string {
+  const formatNum = (val: number) =>
+    val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   return `<!DOCTYPE html>
 <html lang="pt-BR" class="dark">
 <head>
@@ -190,22 +200,31 @@ function renderDashboardHtml(
 
   <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
     <!-- Stat Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-slate-400 block mb-1">Total de Lançamentos</span>
+        <span class="text-xs font-medium text-slate-400 block mb-1">Lançamentos</span>
         <span class="text-2xl font-bold text-white">${totalTransactions}</span>
+        <span class="text-xs text-slate-500 block mt-1">${summary.count} em ${summary.monthName}</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-emerald-400 block mb-1">Receitas do Mês</span>
-        <span class="text-2xl font-bold text-emerald-400">R$ ${summary.totalIncome.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+        <span class="text-xs font-medium text-sky-400 block mb-1">Saldo Anterior</span>
+        <span class="text-2xl font-bold ${summary.previousBalance >= 0 ? 'text-sky-400' : 'text-rose-400'}">R$ ${formatNum(summary.previousBalance)}</span>
+        <span class="text-xs text-slate-500 block mt-1">Até ${summary.monthName}</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-rose-400 block mb-1">Despesas do Mês</span>
-        <span class="text-2xl font-bold text-rose-400">R$ ${summary.totalExpense.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+        <span class="text-xs font-medium text-emerald-400 block mb-1">Receitas (${summary.monthName})</span>
+        <span class="text-2xl font-bold text-emerald-400">R$ ${formatNum(summary.monthIncome)}</span>
+        <span class="text-xs text-slate-500 block mt-1">Ganhos do mês</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-slate-400 block mb-1">Saldo Líquido</span>
-        <span class="text-2xl font-bold ${summary.balance >= 0 ? 'text-emerald-400' : 'text-rose-400'}">R$ ${summary.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+        <span class="text-xs font-medium text-rose-400 block mb-1">Despesas (${summary.monthName})</span>
+        <span class="text-2xl font-bold text-rose-400">R$ ${formatNum(summary.monthExpense)}</span>
+        <span class="text-xs text-slate-500 block mt-1">Gastos do mês</span>
+      </div>
+      <div class="bg-slate-900/80 border border-emerald-500/30 bg-emerald-950/10 p-5 rounded-2xl shadow-lg shadow-emerald-950/20">
+        <span class="text-xs font-semibold text-emerald-300 block mb-1">💰 Saldo Disponível</span>
+        <span class="text-2xl font-black ${summary.totalBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'}">R$ ${formatNum(summary.totalBalance)}</span>
+        <span class="text-xs text-slate-400 block mt-1">Acumulado Geral</span>
       </div>
     </div>
 
@@ -238,51 +257,56 @@ function renderDashboardHtml(
 
           <div class="p-4 bg-white rounded-2xl shadow-2xl border-4 border-emerald-500/30 mb-6 flex items-center justify-center min-w-[320px] min-h-[320px]">
             <img 
-              id="qr-img" 
+              id="qr-image" 
               src="${state.qrCodeDataUrl || ''}" 
               alt="QR Code WhatsApp" 
               class="${state.qrCodeDataUrl ? 'block' : 'hidden'} w-72 h-72 rounded-lg"
             />
-            <div id="qr-loading" class="${state.qrCodeDataUrl ? 'hidden' : 'flex'} flex-col items-center justify-center text-slate-600 p-8 space-y-3">
-              <svg class="animate-spin h-8 w-8 text-emerald-600" fill="none" viewBox="0 0 24 24">
+            <div id="qr-spinner" class="${state.qrCodeDataUrl ? 'hidden' : 'flex'} flex-col items-center justify-center text-slate-900 space-y-3">
+              <svg class="animate-spin h-10 w-10 text-emerald-600" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              <span class="text-sm font-medium">Aguardando geração do QR Code...</span>
+              <span class="text-xs font-semibold text-slate-600">Gerando QR Code...</span>
             </div>
           </div>
-
-          <p class="text-xs text-slate-500">Este QR Code atualiza automaticamente em tempo real sem necessidade de recarregar a página.</p>
+          
+          <p class="text-xs text-slate-500">O QR Code atualiza automaticamente em tempo real.</p>
         </div>
 
       </div>
 
-      <!-- Quick Instructions & Configs (5 cols) -->
-      <div class="lg:col-span-5 space-y-6">
-        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
-          <h3 class="text-lg font-bold text-white mb-4 flex items-center">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span>
+      <!-- Quick Info / Help Box (5 cols) -->
+      <div class="lg:col-span-5 space-y-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-7 shadow-xl space-y-6">
+          <h3 class="font-bold text-lg text-white flex items-center">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 mr-2.5"></span>
             Como usar no Grupo
           </h3>
+
           <div class="space-y-4 text-sm text-slate-300">
-            <div class="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
-              <p class="font-semibold text-emerald-400 mb-1">1. Lançamentos por Texto ou Áudio</p>
-              <p class="text-xs text-slate-400">Envie mensagens normais como <em>"Comprei 35 de padaria no débito"</em> ou grave uma nota de voz.</p>
+            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
+              <h4 class="font-semibold text-white mb-1">1. Lançamentos por Texto ou Áudio</h4>
+              <p class="text-xs text-slate-400">
+                Envie mensagens normais como <em>"Comprei 35 de padaria no débito"</em> ou grave uma nota de voz.
+              </p>
             </div>
 
-            <div class="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
-              <p class="font-semibold text-emerald-400 mb-1">2. Comandos Rápidos</p>
-              <ul class="text-xs text-slate-400 space-y-1 font-mono">
-                <li><strong class="text-slate-200">/saldo</strong> ou <strong class="text-slate-200">/resumo</strong> - Totais do mês</li>
-                <li><strong class="text-slate-200">/extrato</strong> - Ver últimos 5 lançamentos</li>
-                <li><strong class="text-slate-200">/deletar &lt;ID&gt;</strong> - Cancelar lançamento</li>
-                <li><strong class="text-slate-200">/ajuda</strong> - Menu de comandos</li>
-              </ul>
+            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
+              <h4 class="font-semibold text-white mb-1">2. Comandos Rápidos</h4>
+              <p class="text-xs text-slate-400 space-y-1">
+                <code class="text-emerald-400 font-mono">/saldo</code> ou <code class="text-emerald-400 font-mono">/resumo</code> - Totais e saldo disponível<br>
+                <code class="text-emerald-400 font-mono">/extrato</code> - Ver últimos 5 lançamentos<br>
+                <code class="text-emerald-400 font-mono">/deletar &lt;ID&gt;</code> - Cancelar lançamento<br>
+                <code class="text-emerald-400 font-mono">/ajuda</code> - Menu de comandos
+              </p>
             </div>
 
-            <div class="p-3 bg-slate-950 rounded-xl border border-slate-800/80">
-              <p class="font-semibold text-emerald-400 mb-1">3. Segurança e Grupo Privado</p>
-              <p class="text-xs text-slate-400">O bot só processa mensagens originadas no grupo cujo JID está configurado em <code class="text-emerald-400 font-mono">TARGET_GROUP_JID</code>.</p>
+            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
+              <h4 class="font-semibold text-white mb-1">3. Segurança e Grupo Privado</h4>
+              <p class="text-xs text-slate-400">
+                O bot só processa mensagens originadas no grupo cujo JID está configurado em <code class="text-emerald-400 font-mono">TARGET_GROUP_JID</code>.
+              </p>
             </div>
           </div>
         </div>
@@ -294,50 +318,63 @@ function renderDashboardHtml(
     const token = '${token}';
     const evtSource = new EventSource('/api/events?token=' + encodeURIComponent(token));
 
+    const badgeStatus = document.getElementById('badge-status');
+    const badgeText = document.getElementById('badge-text');
+    const viewConnected = document.getElementById('view-connected');
+    const viewQr = document.getElementById('view-qr');
+    const qrImage = document.getElementById('qr-image');
+    const qrSpinner = document.getElementById('qr-spinner');
+
     evtSource.onmessage = function(event) {
       try {
-        const state = JSON.parse(event.data);
-        const viewConnected = document.getElementById('view-connected');
-        const viewQr = document.getElementById('view-qr');
-        const qrImg = document.getElementById('qr-img');
-        const qrLoading = document.getElementById('qr-loading');
-        const badgeStatus = document.getElementById('badge-status');
-        const badgeText = document.getElementById('badge-text');
-
-        if (state.status === 'CONNECTED') {
-          viewConnected.classList.remove('hidden');
-          viewConnected.classList.add('flex');
-          viewQr.classList.add('hidden');
-          viewQr.classList.remove('flex');
-
-          badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
-          badgeText.textContent = 'Conectado';
-        } else {
-          viewConnected.classList.add('hidden');
-          viewConnected.classList.remove('flex');
-          viewQr.classList.remove('hidden');
-          viewQr.classList.add('flex');
-
-          if (state.qrCodeDataUrl) {
-            qrImg.src = state.qrCodeDataUrl;
-            qrImg.classList.remove('hidden');
-            qrImg.classList.add('block');
-            qrLoading.classList.add('hidden');
-            qrLoading.classList.remove('flex');
-          } else {
-            qrImg.classList.add('hidden');
-            qrImg.classList.remove('block');
-            qrLoading.classList.remove('hidden');
-            qrLoading.classList.add('flex');
-          }
-
-          badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-pulse';
-          badgeText.textContent = state.status === 'CONNECTING' ? 'Aguardando QR Code' : 'Desconectado';
-        }
+        const data = JSON.parse(event.data);
+        updateUI(data);
       } catch (err) {
         console.error('Erro ao processar evento SSE:', err);
       }
     };
+
+    function updateUI(data) {
+      if (data.status === 'CONNECTED') {
+        badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
+        badgeText.textContent = 'Conectado';
+        viewConnected.classList.remove('hidden');
+        viewConnected.classList.add('flex');
+        viewQr.classList.remove('flex');
+        viewQr.classList.add('hidden');
+      } else if (data.status === 'CONNECTING') {
+        badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/30 animate-pulse';
+        badgeText.textContent = 'Aguardando QR Code';
+        viewConnected.classList.remove('flex');
+        viewConnected.classList.add('hidden');
+        viewQr.classList.remove('hidden');
+        viewQr.classList.add('flex');
+
+        if (data.qrCodeDataUrl) {
+          qrImage.src = data.qrCodeDataUrl;
+          qrImage.classList.remove('hidden');
+          qrImage.classList.add('block');
+          qrSpinner.classList.remove('flex');
+          qrSpinner.classList.add('hidden');
+        } else {
+          qrImage.classList.remove('block');
+          qrImage.classList.add('hidden');
+          qrSpinner.classList.remove('hidden');
+          qrSpinner.classList.add('flex');
+        }
+      } else {
+        badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-red-500/10 text-red-400 border border-red-500/30';
+        badgeText.textContent = 'Desconectado';
+        viewConnected.classList.remove('flex');
+        viewConnected.classList.add('hidden');
+        viewQr.classList.remove('hidden');
+        viewQr.classList.add('flex');
+        qrImage.classList.remove('block');
+        qrImage.classList.add('hidden');
+        qrSpinner.classList.remove('hidden');
+        qrSpinner.classList.add('flex');
+      }
+    }
   </script>
 </body>
 </html>`;

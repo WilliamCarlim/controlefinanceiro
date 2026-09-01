@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { formatBRL, createTransaction, getMonthSummary, deleteTransaction, getRecentTransactions } from '../src/services/finance/transactionService.js';
 import { prisma } from '../src/lib/prisma.js';
 import { Prisma } from '@prisma/client';
@@ -7,7 +7,6 @@ describe('Transaction Service', () => {
   describe('formatBRL', () => {
     it('deve formatar valores monetários em padrão BRL corretamente', () => {
       const formatted = formatBRL(35.5);
-      // Deve conter R$ e 35,50
       expect(formatted).toContain('35,50');
       expect(formatted).toContain('R$');
     });
@@ -50,36 +49,41 @@ describe('Transaction Service', () => {
       expect(Number(result.amount)).toBe(35.0);
     });
 
-    it('deve calcular o resumo do mês corretamente', async () => {
+    it('deve calcular o resumo do mês com saldo anterior e saldo acumulado', async () => {
       const mockList = [
         {
-          id: '1',
+          id: 'prev-1',
           type: 'INCOME',
-          amount: new Prisma.Decimal(3500.0),
+          amount: new Prisma.Decimal(3000.0),
+          date: new Date('2026-08-28T10:00:00Z'), // Salário do mês anterior
           isDeleted: false,
         },
         {
-          id: '2',
+          id: 'prev-2',
           type: 'EXPENSE',
-          amount: new Prisma.Decimal(500.0),
+          amount: new Prisma.Decimal(1000.0),
+          date: new Date('2026-08-29T10:00:00Z'), // Gasto do mês anterior
           isDeleted: false,
         },
         {
-          id: '3',
+          id: 'curr-1',
           type: 'EXPENSE',
-          amount: new Prisma.Decimal(250.5),
+          amount: new Prisma.Decimal(200.0),
+          date: new Date('2026-09-01T10:00:00Z'), // Gasto no mês atual
           isDeleted: false,
         },
       ];
 
       vi.spyOn(prisma.transaction, 'findMany').mockResolvedValue(mockList as any);
 
-      const summary = await getMonthSummary(new Date('2026-08-31'));
+      const summary = await getMonthSummary(new Date('2026-09-01T12:00:00Z'));
 
-      expect(summary.totalIncome).toBe(3500);
-      expect(summary.totalExpense).toBe(750.5);
-      expect(summary.balance).toBe(2749.5);
-      expect(summary.count).toBe(3);
+      expect(summary.previousBalance).toBe(2000); // 3000 - 1000
+      expect(summary.monthIncome).toBe(0);
+      expect(summary.monthExpense).toBe(200);
+      expect(summary.monthNet).toBe(-200);
+      expect(summary.totalBalance).toBe(1800); // 2000 - 200
+      expect(summary.count).toBe(1);
     });
 
     it('deve buscar os últimos lançamentos ordenados por data desc', async () => {
