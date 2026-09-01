@@ -5,6 +5,7 @@ import { logger } from './lib/logger.js';
 import { checkDatabaseConnection, prisma } from './lib/prisma.js';
 import { whatsAppService } from './services/whatsapp/baileysClient.js';
 import { router as webRouter } from './web/routes.js';
+import { keepAliveService } from './services/system/keepAliveService.js';
 
 async function bootstrap() {
   logger.info('🚀 Inicializando Bot de Controle Financeiro...');
@@ -33,9 +34,13 @@ async function bootstrap() {
   // Inicializa o cliente do WhatsApp Baileys embutido
   await whatsAppService.start();
 
+  // Inicializa o serviço Keep-Alive (Auto-Ping Render, Ping PostgreSQL e Watchdog)
+  keepAliveService.start();
+
   // Tratamento de encerramento seguro (Graceful Shutdown)
   const shutdown = async (signal: string) => {
     logger.info(`Recebido sinal ${signal}. Encerrando aplicação graciosamente...`);
+    keepAliveService.stop();
     server.close();
     await prisma.$disconnect();
     process.exit(0);

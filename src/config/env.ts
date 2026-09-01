@@ -11,6 +11,9 @@ export interface AppConfig {
   geminiApiKey: string;
   targetGroupJid: string;
   adminWebToken: string;
+  appUrl: string;
+  keepAliveIntervalMinutes: number;
+  dbKeepAliveIntervalMinutes: number;
 }
 
 export const config: AppConfig = {
@@ -20,6 +23,10 @@ export const config: AppConfig = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   targetGroupJid: (process.env.TARGET_GROUP_JID || '').trim(),
   adminWebToken: process.env.ADMIN_WEB_TOKEN || 'admin123',
+  // URL da aplicação no Render ou customizada (Render fornece RENDER_EXTERNAL_URL automaticamente)
+  appUrl: (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').trim(),
+  keepAliveIntervalMinutes: parseInt(process.env.KEEP_ALIVE_INTERVAL_MINUTES || '10', 10),
+  dbKeepAliveIntervalMinutes: parseInt(process.env.DB_KEEP_ALIVE_INTERVAL_MINUTES || '5', 10),
 };
 
 export function validateConfig(): void {
