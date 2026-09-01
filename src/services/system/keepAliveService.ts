@@ -19,20 +19,19 @@ class KeepAliveService {
   }
 
   /**
-   * Auto-Ping HTTP periódico para evitar que o Render hiberne (Free Tier)
-   * Render hiberne após 15 min de inatividade HTTP. Fazemos o ping a cada 10 min.
+   * Auto-Ping HTTP periódico na URL pública externa para evitar hibernação no Render (Free Tier)
    */
   private startHttpSelfPing(): void {
-    const targetUrl = config.appUrl || `http://localhost:${config.port}`;
-    const intervalMs = config.keepAliveIntervalMinutes * 60 * 1000; // Padrão: 10 minutos
+    const targetUrl = config.appUrl || 'https://controlefinanceiro-wvq0.onrender.com';
+    const intervalMs = config.keepAliveIntervalMinutes * 60 * 1000; // Padrão: 5 minutos
 
     logger.info(
       { targetUrl, intervalMinutes: config.keepAliveIntervalMinutes },
-      '⏰ Auto-Ping HTTP Keep-Alive configurado.'
+      '⏰ Auto-Ping HTTP Keep-Alive configurado na URL pública.'
     );
 
-    // Executa primeiro ping após 1 minuto
-    setTimeout(() => this.pingUrl(targetUrl), 60 * 1000);
+    // Executa primeiro ping após 15 segundos
+    setTimeout(() => this.pingUrl(targetUrl), 15 * 1000);
 
     // Agenda execuções periódicas
     this.httpPingTimer = setInterval(() => {
@@ -47,10 +46,10 @@ class KeepAliveService {
 
       const client = fullUrl.startsWith('https') ? https : http;
 
-      const req = client.get(fullUrl, (res) => {
+      const req = client.get(fullUrl, { timeout: 20000 }, (res) => {
         logger.info(
           { url: fullUrl, statusCode: res.statusCode },
-          '💓 [Keep-Alive] Ping HTTP executado com sucesso (serviço ativo).'
+          '💓 [Keep-Alive] Ping HTTP público executado com sucesso (serviço ativo).'
         );
       });
 
@@ -58,7 +57,7 @@ class KeepAliveService {
         logger.warn({ error: err.message, url: fullUrl }, '⚠️ [Keep-Alive] Falha no ping HTTP.');
       });
 
-      req.setTimeout(15000, () => {
+      req.on('timeout', () => {
         req.destroy();
         logger.warn({ url: fullUrl }, '⚠️ [Keep-Alive] Timeout no ping HTTP.');
       });
@@ -68,11 +67,10 @@ class KeepAliveService {
   }
 
   /**
-   * Ping no Banco de Dados PostgreSQL a cada 5 minutos
-   * Evita que o pool de conexões do PostgreSQL caia por inatividade
+   * Ping no Banco de Dados PostgreSQL a cada 3 minutos
    */
   private startDatabaseKeepAlive(): void {
-    const intervalMs = config.dbKeepAliveIntervalMinutes * 60 * 1000; // Padrão: 5 minutos
+    const intervalMs = config.dbKeepAliveIntervalMinutes * 60 * 1000; // Padrão: 3 minutos
 
     this.dbPingTimer = setInterval(async () => {
       try {
@@ -86,7 +84,7 @@ class KeepAliveService {
 
   /**
    * Watchdog do WhatsApp
-   * Verifica a cada 2 minutos se o WhatsApp está desconectado e força reconexão
+   * Verifica a cada 1 minuto se o WhatsApp está desconectado e força reconexão
    */
   private startWhatsAppWatchdog(): void {
     this.watchdogTimer = setInterval(async () => {
@@ -99,7 +97,7 @@ class KeepAliveService {
       } catch (err: any) {
         logger.error({ error: err?.message }, '❌ [Watchdog] Erro ao verificar status do WhatsApp.');
       }
-    }, 2 * 60 * 1000);
+    }, 60 * 1000);
   }
 
   public stop(): void {

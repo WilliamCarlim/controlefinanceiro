@@ -32,6 +32,7 @@ class WhatsAppService extends EventEmitter {
   private botJid: string | null = null;
   private lastConnectedAt: Date | null = null;
   private isConnecting = false;
+  private presenceTimer: NodeJS.Timeout | null = null;
 
   public getState(): WhatsAppState {
     return {
@@ -119,12 +120,25 @@ class WhatsAppService extends EventEmitter {
           this.isConnecting = false;
 
           logger.info({ user: sock.user }, '✅ WhatsApp Conectado com Sucesso!');
+
+          // Mantém presença ativa a cada 45 segundos
+          if (this.presenceTimer) clearInterval(this.presenceTimer);
+          this.presenceTimer = setInterval(async () => {
+            try {
+              if (this.status === 'CONNECTED' && this.sock) {
+                await this.sock.sendPresenceUpdate('available');
+              }
+            } catch {
+              // ignore
+            }
+          }, 45000);
         }
 
         if (connection === 'close') {
           this.isConnecting = false;
           this.qrCodeDataUrl = null;
           this.qrCodeRaw = null;
+          if (this.presenceTimer) clearInterval(this.presenceTimer);
 
           const error = lastDisconnect?.error as Boom | undefined;
           const statusCode = error?.output?.statusCode;
@@ -139,11 +153,9 @@ class WhatsAppService extends EventEmitter {
             logger.warn('Usuário desconectou a sessão do WhatsApp. Limpando credenciais...');
             await clearSession();
             this.setStatus('DISCONNECTED');
-            // Reinicia para disponibilizar novo QR Code
             setTimeout(() => this.start(), 3000);
           } else {
             this.setStatus('DISCONNECTED');
-            // Reconexão automática em caso de queda de rede ou restart
             const retryDelay = 5000;
             logger.info(`Tentando reconectar em ${retryDelay / 1000}s...`);
             setTimeout(() => this.start(), retryDelay);

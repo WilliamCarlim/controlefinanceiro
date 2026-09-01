@@ -125,8 +125,11 @@ export async function handleIncomingMessage(
       );
     }
 
+    const cleanRemoteJid = (remoteJid || '').replace(/["']/g, '').trim().toLowerCase();
+    const cleanTargetJid = (config.targetGroupJid || '').replace(/["']/g, '').trim().toLowerCase();
+
     // Filtro Estrito: Apenas processa se for exatamente o TARGET_GROUP_JID configurado
-    if (!config.targetGroupJid || remoteJid !== config.targetGroupJid) {
+    if (!cleanTargetJid || cleanRemoteJid !== cleanTargetJid) {
       return;
     }
 
