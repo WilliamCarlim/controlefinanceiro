@@ -1,12 +1,12 @@
 import { Prisma, Transaction, TransactionType } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
-import { startOfMonth, endOfMonth } from 'date-fns';
+import { startOfMonth, endOfMonth, startOfDay, endOfDay, subDays } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 
 const TIME_ZONE = 'America/Sao_Paulo';
 
-const MONTH_NAMES_PT = [
+export const MONTH_NAMES_PT = [
   'Janeiro',
   'Fevereiro',
   'Março',
@@ -43,6 +43,14 @@ export interface MonthSummary {
   monthName: string;
   year: number;
   count: number;
+}
+
+export interface StatementData {
+  periodLabel: string;
+  transactions: Transaction[];
+  totalIncome: number;
+  totalExpense: number;
+  net: number;
 }
 
 export function formatBRL(value: number | Prisma.Decimal): string {
@@ -156,6 +164,98 @@ export async function getRecentTransactions(limit = 5): Promise<Transaction[]> {
     },
     take: limit,
   });
+}
+
+/**
+ * Busca extrato por período (padrão: últimos 30 dias ou mês/ano específico como 08/2026)
+ */
+export async function getStatement(param?: string): Promise<StatementData> {
+  const now = new Date();
+  const zonedNow = toZonedTime(now, TIME_ZONE);
+  let startDate: Date;
+  let endDate: Date;
+  let periodLabel: string;
+
+  const cleanParam = (param || '').trim().toLowerCase();
+
+  if (!cleanParam) {
+    // Últimos 30 dias por padrão
+    startDate = startOfDay(subDays(zonedNow, 30));
+    endDate = endOfDay(zonedNow);
+    periodLabel = 'Últimos 30 Dias';
+  } else {
+    // Tenta formato MM/YYYY, MM/YY, M/YYYY, MM-YYYY ou apenas MM
+    const slashMatch = cleanParam.match(/^(\d{1,2})[\/\-](\d{2,4})$/);
+    const monthOnlyMatch = cleanParam.match(/^(\d{1,2})$/);
+
+    let targetMonth: number | null = null;
+    let targetYear: number = zonedNow.getFullYear();
+
+    if (slashMatch) {
+      targetMonth = parseInt(slashMatch[1], 10);
+      let rawYear = parseInt(slashMatch[2], 10);
+      if (rawYear < 100) rawYear += 2000; // ex: 26 -> 2026
+      targetYear = rawYear;
+    } else if (monthOnlyMatch) {
+      targetMonth = parseInt(monthOnlyMatch[1], 10);
+    } else {
+      // Tenta nome do mês em português (ex: agosto, set, etc)
+      const monthIdx = MONTH_NAMES_PT.findIndex((m) =>
+        m.toLowerCase().startsWith(cleanParam.slice(0, 3))
+      );
+      if (monthIdx !== -1) {
+        targetMonth = monthIdx + 1;
+      }
+    }
+
+    if (!targetMonth || targetMonth < 1 || targetMonth > 12) {
+      // Se não reconheceu o formato, busca 30 dias
+      startDate = startOfDay(subDays(zonedNow, 30));
+      endDate = endOfDay(zonedNow);
+      periodLabel = 'Últimos 30 Dias';
+    } else {
+      const monthDate = new Date(targetYear, targetMonth - 1, 1);
+      startDate = startOfMonth(monthDate);
+      endDate = endOfMonth(monthDate);
+      const mName = MONTH_NAMES_PT[targetMonth - 1];
+      periodLabel = `${mName}/${targetYear}`;
+    }
+  }
+
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      isDeleted: false,
+      date: {
+        gte: startDate,
+        lte: endDate,
+      },
+    },
+    orderBy: {
+      date: 'desc',
+    },
+  });
+
+  let totalIncome = 0;
+  let totalExpense = 0;
+
+  for (const t of transactions) {
+    const amt = Number(t.amount);
+    if (t.type === TransactionType.INCOME) {
+      totalIncome += amt;
+    } else {
+      totalExpense += amt;
+    }
+  }
+
+  const net = totalIncome - totalExpense;
+
+  return {
+    periodLabel,
+    transactions,
+    totalIncome,
+    totalExpense,
+    net,
+  };
 }
 
 export async function deleteTransaction(

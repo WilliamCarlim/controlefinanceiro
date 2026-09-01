@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { formatBRL, createTransaction, getMonthSummary, deleteTransaction, getRecentTransactions } from '../src/services/finance/transactionService.js';
+import {
+  formatBRL,
+  createTransaction,
+  getMonthSummary,
+  deleteTransaction,
+  getRecentTransactions,
+  getStatement,
+} from '../src/services/finance/transactionService.js';
 import { prisma } from '../src/lib/prisma.js';
 import { Prisma } from '@prisma/client';
 
@@ -96,6 +103,52 @@ describe('Transaction Service', () => {
 
       const result = await getRecentTransactions(5);
       expect(result.length).toBe(2);
+    });
+
+    it('deve buscar extrato dos ultimos 30 dias', async () => {
+      const mockList = [
+        {
+          id: '1',
+          type: 'INCOME',
+          amount: new Prisma.Decimal(150.0),
+          description: 'Pix',
+          category: 'Outros',
+          paymentMethod: 'Pix',
+          date: new Date(),
+          isDeleted: false,
+        },
+      ];
+
+      vi.spyOn(prisma.transaction, 'findMany').mockResolvedValue(mockList as any);
+
+      const statement = await getStatement();
+      expect(statement.periodLabel).toBe('Últimos 30 Dias');
+      expect(statement.transactions.length).toBe(1);
+      expect(statement.totalIncome).toBe(150);
+      expect(statement.net).toBe(150);
+    });
+
+    it('deve buscar extrato por mês e ano específico (08/2026)', async () => {
+      const mockList = [
+        {
+          id: 'aug-1',
+          type: 'INCOME',
+          amount: new Prisma.Decimal(125.43),
+          description: 'Depósito',
+          category: 'Outros',
+          paymentMethod: 'Pix',
+          date: new Date('2026-08-31T12:00:00Z'),
+          isDeleted: false,
+        },
+      ];
+
+      vi.spyOn(prisma.transaction, 'findMany').mockResolvedValue(mockList as any);
+
+      const statement = await getStatement('08/2026');
+      expect(statement.periodLabel).toBe('Agosto/2026');
+      expect(statement.transactions.length).toBe(1);
+      expect(statement.totalIncome).toBe(125.43);
+      expect(statement.net).toBe(125.43);
     });
 
     it('deve deletar transação buscando por prefixo do ID', async () => {

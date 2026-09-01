@@ -10,7 +10,7 @@ import {
   deleteTransaction,
   formatBRL,
   getMonthSummary,
-  getRecentTransactions,
+  getStatement,
 } from '../finance/transactionService.js';
 import {
   extractFinancialDataFromAudio,
@@ -103,7 +103,7 @@ export async function handleIncomingMessage(
     if (
       text.startsWith('✅ *Lançamento') ||
       text.startsWith('📊 *Resumo') ||
-      text.startsWith('📑 *Últimos') ||
+      text.startsWith('📑 *Extrato') ||
       text.startsWith('🗑️ *Lançamento') ||
       text.startsWith('🤖 *Guia') ||
       text.startsWith('⚠️') ||
@@ -146,8 +146,10 @@ export async function handleIncomingMessage(
       return;
     }
 
-    if (lower === '/extrato') {
-      await handleExtratoCommand(sock, remoteJid, msg);
+    if (lower === '/extrato' || lower.startsWith('/extrato ')) {
+      const parts = text.split(' ');
+      const periodParam = parts.slice(1).join(' ').trim();
+      await handleExtratoCommand(sock, remoteJid, periodParam, msg);
       return;
     }
 
@@ -195,28 +197,29 @@ async function handleSaldoCommand(
 }
 
 /**
- * Responde ao comando /extrato
+ * Responde ao comando /extrato (últimos 30 dias ou mês específico como 08/2026)
  */
 async function handleExtratoCommand(
   sock: WASocket,
   remoteJid: string,
+  periodParam: string | undefined,
   quotedMsg: proto.IWebMessageInfo
 ): Promise<void> {
-  const transactions = await getRecentTransactions(5);
+  const statement = await getStatement(periodParam);
 
-  if (transactions.length === 0) {
+  if (statement.transactions.length === 0) {
     await sendBotReply(
       sock,
       remoteJid,
-      { text: 'ℹ️ Nenhum lançamento encontrado no histórico.' },
+      { text: `ℹ️ Nenhum lançamento encontrado para: *${statement.periodLabel}*.` },
       { quoted: quotedMsg }
     );
     return;
   }
 
-  let text = `📑 *Últimos ${transactions.length} Lançamentos:*\n\n`;
+  let text = `📑 *Extrato - ${statement.periodLabel}*\n\n`;
 
-  transactions.forEach((t, index) => {
+  statement.transactions.forEach((t, index) => {
     const isIncome = t.type === 'INCOME';
     const typeEmoji = isIncome ? '🟢' : '🔴';
     const shortId = t.id.substring(0, 8);
@@ -227,7 +230,14 @@ async function handleExtratoCommand(
     text += `   📅 ${dateFormatted} | 🆔 \`${shortId}\`\n\n`;
   });
 
-  text += `_Para excluir algum lançamento, envie: /deletar ID_`;
+  const netEmoji = statement.net >= 0 ? '🟢' : '🔴';
+
+  text +=
+    `📊 *Totais do Período:*\n` +
+    `🟢 Receitas: ${formatBRL(statement.totalIncome)}\n` +
+    `🔴 Despesas: ${formatBRL(statement.totalExpense)}\n` +
+    `💰 Resultado: ${netEmoji} *${formatBRL(statement.net)}*\n\n` +
+    `_Para excluir algum lançamento, envie: /deletar ID_`;
 
   await sendBotReply(sock, remoteJid, { text: text.trim() }, { quoted: quotedMsg });
 }
@@ -297,7 +307,8 @@ async function handleAjudaCommand(
     `• _"Gasolina 150 reais ontem"_\n\n` +
     `⚡ *Comandos Rápidos:*\n` +
     `• */saldo* ou */resumo* - Saldo anterior, do mês e total disponível\n` +
-    `• */extrato* - Ver os últimos 5 lançamentos\n` +
+    `• */extrato* - Lançamentos dos últimos 30 dias\n` +
+    `• */extrato 08/2026* - Lançamentos de um mês específico\n` +
     `• */deletar <ID>* - Cancelar um lançamento\n` +
     `• */ajuda* - Exibe este menu`;
 
