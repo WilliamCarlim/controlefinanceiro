@@ -45,8 +45,8 @@ class WhatsAppService extends EventEmitter {
   }
 
   public async start(): Promise<void> {
-    if (this.isConnecting || this.status === 'CONNECTED') {
-      logger.info('WhatsApp já está conectado ou em processo de conexão.');
+    if (this.isConnecting) {
+      logger.info('WhatsApp já está em processo de conexão.');
       return;
     }
 
@@ -59,6 +59,15 @@ class WhatsAppService extends EventEmitter {
 
       const { state, saveCreds, clearSession } = await usePrismaAuthState('session_main');
 
+      // Fecha socket anterior se existir
+      if (this.sock) {
+        try {
+          this.sock.end(undefined);
+        } catch {
+          // ignore
+        }
+      }
+
       const sock = makeWASocket({
         version,
         auth: state,
@@ -66,6 +75,11 @@ class WhatsAppService extends EventEmitter {
         logger: logger.child({ module: 'baileys' }) as any,
         syncFullHistory: false,
         generateHighQualityLinkPreview: false,
+        markOnlineOnConnect: true,
+        keepAliveIntervalMs: 25000,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        retryRequestDelayMs: 2000,
       });
 
       this.sock = sock;

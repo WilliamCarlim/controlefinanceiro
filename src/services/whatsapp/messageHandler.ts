@@ -56,6 +56,32 @@ function formatDateBR(date: Date | string): string {
 }
 
 /**
+ * Extrai de forma robusta texto e mídias de qualquer formato de mensagem do WhatsApp
+ */
+function extractMessageData(msg: proto.IWebMessageInfo) {
+  const m =
+    msg.message?.ephemeralMessage?.message ||
+    msg.message?.viewOnceMessage?.message ||
+    msg.message?.viewOnceMessageV2?.message ||
+    msg.message?.documentWithCaptionMessage?.message ||
+    msg.message;
+
+  if (!m) return { text: '', isAudio: false, audioMessage: null };
+
+  const text =
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    '';
+
+  const audioMessage = m.audioMessage;
+  const isAudio = Boolean(audioMessage);
+
+  return { text: text.trim(), isAudio, audioMessage };
+}
+
+/**
  * Manipulador principal de mensagens recebidas pelo Baileys
  */
 export async function handleIncomingMessage(
@@ -71,27 +97,17 @@ export async function handleIncomingMessage(
     const remoteJid = msg.key.remoteJid;
     if (!remoteJid || remoteJid === 'status@broadcast') return;
 
-    const messageContent = msg.message;
-    if (!messageContent) return;
-
-    // Extração de Texto
-    const text =
-      messageContent.conversation ||
-      messageContent.extendedTextMessage?.text ||
-      messageContent.imageMessage?.caption ||
-      '';
-
-    const trimmedText = text.trim();
+    const { text, isAudio } = extractMessageData(msg);
 
     // Se a mensagem começar com os padrões de resposta do bot, ignora para evitar eco
     if (
-      trimmedText.startsWith('✅ *Lançamento') ||
-      trimmedText.startsWith('📊 *Resumo') ||
-      trimmedText.startsWith('📑 *Últimos') ||
-      trimmedText.startsWith('🗑️ *Lançamento') ||
-      trimmedText.startsWith('🤖 *Guia') ||
-      trimmedText.startsWith('⚠️') ||
-      trimmedText.startsWith('ℹ️')
+      text.startsWith('✅ *Lançamento') ||
+      text.startsWith('📊 *Resumo') ||
+      text.startsWith('📑 *Últimos') ||
+      text.startsWith('🗑️ *Lançamento') ||
+      text.startsWith('🤖 *Guia') ||
+      text.startsWith('⚠️') ||
+      text.startsWith('ℹ️')
     ) {
       return;
     }
@@ -102,7 +118,7 @@ export async function handleIncomingMessage(
         {
           groupJid: remoteJid,
           sender: msg.pushName || 'Você',
-          text: trimmedText || (messageContent.audioMessage ? '[Áudio]' : '[Mídia]'),
+          text: text || (isAudio ? '[Áudio]' : '[Mídia]'),
           fromMe: msg.key.fromMe,
         },
         `📢 [MENSAGEM DE GRUPO] ID do Grupo: ${remoteJid}`
@@ -114,17 +130,16 @@ export async function handleIncomingMessage(
       return;
     }
 
-    // Extração de Áudio
-    const isAudio = Boolean(messageContent.audioMessage);
+    // Extração e Processamento de Áudio
     if (isAudio) {
       await handleAudioMessage(sock, msg);
       return;
     }
 
-    if (!trimmedText) return;
+    if (!text) return;
 
     // Processamento de Comandos Rápidos
-    const lower = trimmedText.toLowerCase();
+    const lower = text.toLowerCase();
 
     if (lower === '/saldo' || lower === '/resumo') {
       await handleSaldoCommand(sock, remoteJid, msg);
@@ -137,7 +152,7 @@ export async function handleIncomingMessage(
     }
 
     if (lower.startsWith('/deletar ') || lower.startsWith('/excluir ') || lower.startsWith('/del ')) {
-      const parts = trimmedText.split(' ');
+      const parts = text.split(' ');
       const targetId = parts[1];
       await handleDeleteCommand(sock, remoteJid, targetId, msg);
       return;
@@ -148,8 +163,8 @@ export async function handleIncomingMessage(
       return;
     }
 
-    // Se não for comando, processa como texto financeiro via Gemini AI
-    await handleTextMessageAI(sock, remoteJid, trimmedText, msg);
+    // Se não for comando, processa como texto financeiro via Gemini AI / Heurística
+    await handleTextMessageAI(sock, remoteJid, text, msg);
   } catch (error) {
     logger.error({ error }, 'Erro ao processar mensagem do WhatsApp.');
   }
@@ -167,7 +182,7 @@ async function handleSaldoCommand(
   const balanceEmoji = summary.balance >= 0 ? '🟢' : '🔴';
 
   const replyText =
-    `📊 *Resumo Financeiro do Mês*\n\n` +
+    `📊 *Resumo Financeiro do Mês (${summary.monthName})*\n\n` +
     `🟢 *Receitas:* ${formatBRL(summary.totalIncome)}\n` +
     `🔴 *Despesas:* ${formatBRL(summary.totalExpense)}\n` +
     `💰 *Saldo Líquido:* ${balanceEmoji} *${formatBRL(summary.balance)}*\n\n` +
