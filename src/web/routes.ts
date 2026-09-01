@@ -2,7 +2,12 @@ import express, { Request, Response } from 'express';
 import { config } from '../config/env.js';
 import { whatsAppService, WhatsAppState } from '../services/whatsapp/baileysClient.js';
 import { prisma } from '../lib/prisma.js';
-import { getMonthSummary, MonthSummary } from '../services/finance/transactionService.js';
+import {
+  getMonthSummary,
+  getRecentTransactions,
+  financialEvents,
+  MonthSummary,
+} from '../services/finance/transactionService.js';
 
 export const router = express.Router();
 
@@ -60,9 +65,9 @@ router.get('/reset-session', async (req: Request, res: Response) => {
 });
 
 /**
- * Server-Sent Events (SSE) para atualização do QR Code e status em tempo real
+ * Server-Sent Events (SSE) para atualização em tempo real do WhatsApp e dos lançamentos financeiros
  */
-router.get('/api/events', (req: Request, res: Response) => {
+router.get('/api/events', async (req: Request, res: Response) => {
   if (!isAuthorized(req)) {
     res.status(401).send('Unauthorized');
     return;
@@ -72,26 +77,53 @@ router.get('/api/events', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  const sendState = (state: WhatsAppState) => {
-    res.write(`data: ${JSON.stringify(state)}\n\n`);
+  const sendEvent = (payload: any) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  // Envia o estado atual imediatamente
-  sendState(whatsAppService.getState());
-
-  const listener = (state: WhatsAppState) => {
-    sendState(state);
+  const sendFinancialUpdate = async () => {
+    try {
+      const totalTransactions = await prisma.transaction.count({ where: { isDeleted: false } });
+      const summary = await getMonthSummary();
+      const recent = await getRecentTransactions(8);
+      sendEvent({
+        type: 'financialUpdate',
+        totalTransactions,
+        summary,
+        recentTransactions: recent,
+      });
+    } catch {
+      // ignore
+    }
   };
 
-  whatsAppService.on('stateChange', listener);
+  // Envia o estado inicial completo
+  sendEvent({
+    type: 'state',
+    data: whatsAppService.getState(),
+  });
+  await sendFinancialUpdate();
+
+  // Escuta alterações na conexão do WhatsApp
+  const stateListener = (state: WhatsAppState) => {
+    sendEvent({ type: 'state', data: state });
+  };
+  whatsAppService.on('stateChange', stateListener);
+
+  // Escuta novas transações ou exclusões no banco
+  const financialListener = async () => {
+    await sendFinancialUpdate();
+  };
+  financialEvents.on('change', financialListener);
 
   req.on('close', () => {
-    whatsAppService.off('stateChange', listener);
+    whatsAppService.off('stateChange', stateListener);
+    financialEvents.off('change', financialListener);
   });
 });
 
 /**
- * Painel Web Principal (HTML com UI moderna, status e QR Code em tempo real)
+ * Painel Web Principal
  */
 router.get('/', async (req: Request, res: Response) => {
   const token = (req.query.token as string) || '';
@@ -116,15 +148,17 @@ router.get('/', async (req: Request, res: Response) => {
     year: new Date().getFullYear(),
     count: 0,
   };
+  let recentTransactions: any[] = [];
 
   try {
     totalTransactions = await prisma.transaction.count({ where: { isDeleted: false } });
     summary = await getMonthSummary();
+    recentTransactions = await getRecentTransactions(8);
   } catch (err) {
     // Ignora erro se o banco ainda estiver inicializando
   }
 
-  res.send(renderDashboardHtml(state, token, totalTransactions, summary));
+  res.send(renderDashboardHtml(state, token, totalTransactions, summary, recentTransactions));
 });
 
 function renderUnauthorizedPage(): string {
@@ -144,7 +178,7 @@ function renderUnauthorizedPage(): string {
       </svg>
     </div>
     <h1 class="text-2xl font-bold text-white mb-2">Acesso Restrito</h1>
-    <p class="text-slate-400 text-sm mb-6">Informe o token de administrador para visualizar o QR Code e o painel do WhatsApp.</p>
+    <p class="text-slate-400 text-sm mb-6">Informe o token de administrador para visualizar o painel.</p>
     
     <form method="GET" action="/" class="space-y-4">
       <div>
@@ -172,7 +206,8 @@ function renderDashboardHtml(
   state: WhatsAppState,
   token: string,
   totalTransactions: number,
-  summary: MonthSummary
+  summary: MonthSummary,
+  recentTransactions: any[]
 ): string {
   const formatNum = (val: number) =>
     val.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -189,6 +224,12 @@ function renderDashboardHtml(
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    .stat-val { transition: all 0.3s ease-in-out; }
+    @keyframes pulse-green {
+      0%, 100% { background-color: rgba(16, 185, 129, 0.05); }
+      50% { background-color: rgba(16, 185, 129, 0.2); }
+    }
+    .flash-update { animation: pulse-green 1s ease-in-out; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
@@ -201,11 +242,16 @@ function renderDashboardHtml(
         </div>
         <div>
           <h1 class="font-bold text-white leading-tight">FinançasBot WhatsApp</h1>
-          <p class="text-xs text-slate-400">Baileys + Gemini AI + PostgreSQL</p>
+          <p class="text-xs text-slate-400">Tempo Real • PostgreSQL • Gemini AI</p>
         </div>
       </div>
       
       <div class="flex items-center space-x-3">
+        <div class="flex items-center space-x-2 text-xs text-emerald-400 font-mono mr-2 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span>SSE Ativo</span>
+        </div>
+
         <span id="badge-status" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider ${
           state.status === 'CONNECTED'
             ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
@@ -230,75 +276,76 @@ function renderDashboardHtml(
 
   <main class="max-w-6xl mx-auto px-4 sm:px-6 py-8">
     <!-- Stat Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+    <div id="stats-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
         <span class="text-xs font-medium text-slate-400 block mb-1">Lançamentos</span>
-        <span class="text-2xl font-bold text-white">${totalTransactions}</span>
-        <span class="text-xs text-slate-500 block mt-1">${summary.count} em ${summary.monthName}</span>
+        <span id="stat-total" class="text-2xl font-bold text-white stat-val">${totalTransactions}</span>
+        <span id="stat-month-count" class="text-xs text-slate-500 block mt-1">${summary.count} em ${summary.monthName}</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
         <span class="text-xs font-medium text-sky-400 block mb-1">Saldo Anterior</span>
-        <span class="text-2xl font-bold ${summary.previousBalance >= 0 ? 'text-sky-400' : 'text-rose-400'}">R$ ${formatNum(summary.previousBalance)}</span>
-        <span class="text-xs text-slate-500 block mt-1">Até ${summary.monthName}</span>
+        <span id="stat-prev-balance" class="text-2xl font-bold stat-val ${summary.previousBalance >= 0 ? 'text-sky-400' : 'text-rose-400'}">R$ ${formatNum(summary.previousBalance)}</span>
+        <span id="stat-prev-label" class="text-xs text-slate-500 block mt-1">Até ${summary.monthName}</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-emerald-400 block mb-1">Receitas (${summary.monthName})</span>
-        <span class="text-2xl font-bold text-emerald-400">R$ ${formatNum(summary.monthIncome)}</span>
+        <span id="stat-income-label" class="text-xs font-medium text-emerald-400 block mb-1">Receitas (${summary.monthName})</span>
+        <span id="stat-income" class="text-2xl font-bold text-emerald-400 stat-val">R$ ${formatNum(summary.monthIncome)}</span>
         <span class="text-xs text-slate-500 block mt-1">Ganhos do mês</span>
       </div>
       <div class="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-        <span class="text-xs font-medium text-rose-400 block mb-1">Despesas (${summary.monthName})</span>
-        <span class="text-2xl font-bold text-rose-400">R$ ${formatNum(summary.monthExpense)}</span>
+        <span id="stat-expense-label" class="text-xs font-medium text-rose-400 block mb-1">Despesas (${summary.monthName})</span>
+        <span id="stat-expense" class="text-2xl font-bold text-rose-400 stat-val">R$ ${formatNum(summary.monthExpense)}</span>
         <span class="text-xs text-slate-500 block mt-1">Gastos do mês</span>
       </div>
       <div class="bg-slate-900/80 border border-emerald-500/30 bg-emerald-950/10 p-5 rounded-2xl shadow-lg shadow-emerald-950/20">
         <span class="text-xs font-semibold text-emerald-300 block mb-1">💰 Saldo Disponível</span>
-        <span class="text-2xl font-black ${summary.totalBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'}">R$ ${formatNum(summary.totalBalance)}</span>
+        <span id="stat-balance" class="text-2xl font-black stat-val ${summary.totalBalance >= 0 ? 'text-emerald-400' : 'text-rose-400'}">R$ ${formatNum(summary.totalBalance)}</span>
         <span class="text-xs text-slate-400 block mt-1">Acumulado Geral</span>
       </div>
     </div>
 
-    <!-- Main QR / Connection Box -->
+    <!-- Main QR / Connection & Live Feed Box -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      <!-- QR Code & Status Box (7 cols) -->
-      <div class="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 flex flex-col items-center justify-center text-center shadow-xl relative overflow-hidden">
+      
+      <!-- QR Code & Status Box (5 cols) -->
+      <div class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-3xl p-6 flex flex-col items-center justify-center text-center shadow-xl relative overflow-hidden">
         
-        <div id="view-connected" class="${state.status === 'CONNECTED' ? 'flex' : 'hidden'} flex-col items-center justify-center py-8">
-          <div class="w-20 h-20 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-6 border border-emerald-500/20 shadow-lg shadow-emerald-950/40">
-            <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div id="view-connected" class="${state.status === 'CONNECTED' ? 'flex' : 'hidden'} flex-col items-center justify-center py-6 w-full">
+          <div class="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full flex items-center justify-center mb-4 border border-emerald-500/20 shadow-lg shadow-emerald-950/40">
+            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
             </svg>
           </div>
-          <h2 class="text-2xl font-bold text-white mb-2">WhatsApp Conectado com Sucesso!</h2>
-          <p class="text-slate-400 text-sm max-w-md mb-6">
-            O bot está ativo e escutando mensagens de texto e áudio no grupo configurado.
+          <h2 class="text-xl font-bold text-white mb-1">WhatsApp Conectado!</h2>
+          <p class="text-slate-400 text-xs max-w-xs mb-4">
+            Escutando mensagens de texto e áudio no seu grupo.
           </p>
-          <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs font-mono text-left w-full max-w-md space-y-2 text-slate-300">
+          <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-mono text-left w-full space-y-1 text-slate-300">
             <div><span class="text-slate-500">Target Group:</span> <span class="text-emerald-400">${state.targetGroupJid || 'Não configurado'}</span></div>
-            <div><span class="text-slate-500">Status da Sessão:</span> <span class="text-emerald-400">Persistida no PostgreSQL</span></div>
+            <div><span class="text-slate-500">Banco:</span> <span class="text-emerald-400">PostgreSQL Conectado</span></div>
           </div>
 
           <button 
             onclick="resetSession()" 
             id="btn-reset"
-            class="mt-6 inline-flex items-center px-4 py-2.5 border border-slate-700 hover:border-red-500/50 bg-slate-800 hover:bg-red-500/10 text-slate-300 hover:text-red-400 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer"
+            class="mt-4 inline-flex items-center px-4 py-2 border border-slate-700 hover:border-red-500/50 bg-slate-800 hover:bg-red-500/10 text-slate-300 hover:text-red-400 rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer"
           >
             🔄 Desconectar e Gerar Novo QR Code
           </button>
         </div>
 
-        <div id="view-qr" class="${state.status !== 'CONNECTED' ? 'flex' : 'hidden'} flex-col items-center justify-center py-4">
-          <h2 class="text-2xl font-bold text-white mb-2">Escaneie o QR Code</h2>
-          <p class="text-slate-400 text-sm max-w-md mb-6">
-            Abra o WhatsApp no celular > <strong class="text-white">Aparelhos Conectados</strong> > <strong class="text-white">Conectar um aparelho</strong> e aponte para a tela.
+        <div id="view-qr" class="${state.status !== 'CONNECTED' ? 'flex' : 'hidden'} flex-col items-center justify-center py-4 w-full">
+          <h2 class="text-xl font-bold text-white mb-2">Escaneie o QR Code</h2>
+          <p class="text-slate-400 text-xs max-w-xs mb-4">
+            Abra o WhatsApp > Aparelhos Conectados > Conectar um aparelho.
           </p>
 
-          <div class="p-4 bg-white rounded-2xl shadow-2xl border-4 border-emerald-500/30 mb-6 flex items-center justify-center min-w-[320px] min-h-[320px]">
+          <div class="p-3 bg-white rounded-2xl shadow-2xl border-4 border-emerald-500/30 mb-4 flex items-center justify-center min-w-[280px] min-h-[280px]">
             <img 
               id="qr-image" 
               src="${state.qrCodeDataUrl || ''}" 
               alt="QR Code WhatsApp" 
-              class="${state.qrCodeDataUrl ? 'block' : 'hidden'} w-72 h-72 rounded-lg"
+              class="${state.qrCodeDataUrl ? 'block' : 'hidden'} w-64 h-64 rounded-lg"
             />
             <div id="qr-spinner" class="${state.qrCodeDataUrl ? 'hidden' : 'flex'} flex-col items-center justify-center text-slate-900 space-y-3">
               <svg class="animate-spin h-10 w-10 text-emerald-600" fill="none" viewBox="0 0 24 24">
@@ -309,47 +356,62 @@ function renderDashboardHtml(
             </div>
           </div>
           
-          <p class="text-xs text-slate-500">O QR Code atualiza automaticamente em tempo real.</p>
+          <p class="text-xs text-slate-500">Atualiza automaticamente em tempo real.</p>
         </div>
 
       </div>
 
-      <!-- Quick Info / Help Box (5 cols) -->
-      <div class="lg:col-span-5 space-y-4">
-        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-7 shadow-xl space-y-6">
-          <h3 class="font-bold text-lg text-white flex items-center">
-            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 mr-2.5"></span>
-            Como usar no Grupo
-          </h3>
-
-          <div class="space-y-4 text-sm text-slate-300">
-            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
-              <h4 class="font-semibold text-white mb-1">1. Lançamentos por Texto ou Áudio</h4>
-              <p class="text-xs text-slate-400">
-                Envie mensagens normais como <em>"Comprei 35 de padaria no débito"</em> ou grave uma nota de voz.
-              </p>
-            </div>
-
-            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
-              <h4 class="font-semibold text-white mb-1">2. Comandos Rápidos</h4>
-              <p class="text-xs text-slate-400 space-y-1">
-                <code class="text-emerald-400 font-mono">/saldo</code> ou <code class="text-emerald-400 font-mono">/resumo</code> - Totais e saldo disponível<br>
-                <code class="text-emerald-400 font-mono">/extrato</code> - Ver últimos 30 dias<br>
-                <code class="text-emerald-400 font-mono">/extrato 08/2026</code> - Extrato de um mês<br>
-                <code class="text-emerald-400 font-mono">/deletar &lt;ID&gt;</code> - Cancelar lançamento<br>
-                <code class="text-emerald-400 font-mono">/ajuda</code> - Menu de comandos
-              </p>
-            </div>
-
-            <div class="bg-slate-950/60 border border-slate-800/80 p-4 rounded-2xl">
-              <h4 class="font-semibold text-white mb-1">3. Segurança e Grupo Privado</h4>
-              <p class="text-xs text-slate-400">
-                O bot só processa mensagens originadas no grupo cujo JID está configurado em <code class="text-emerald-400 font-mono">TARGET_GROUP_JID</code>.
-              </p>
-            </div>
+      <!-- Live Feed of Recent Transactions (7 cols) -->
+      <div class="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl flex flex-col">
+        <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+          <div class="flex items-center space-x-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <h3 class="font-bold text-white text-base">Últimos Lançamentos (Tempo Real)</h3>
           </div>
+          <span class="text-xs text-slate-500">Atualizado via SSE</span>
+        </div>
+
+        <div class="overflow-x-auto flex-1">
+          <table class="w-full text-left text-xs">
+            <thead>
+              <tr class="text-slate-500 border-b border-slate-800/80">
+                <th class="pb-2.5 font-medium">Descrição</th>
+                <th class="pb-2.5 font-medium">Categoria / Pagamento</th>
+                <th class="pb-2.5 font-medium">Data</th>
+                <th class="pb-2.5 font-medium text-right">Valor</th>
+              </tr>
+            </thead>
+            <tbody id="transactions-body" class="divide-y divide-slate-800/50">
+              ${
+                recentTransactions.length === 0
+                  ? `<tr><td colspan="4" class="py-8 text-center text-slate-500">Nenhum lançamento registrado ainda.</td></tr>`
+                  : recentTransactions
+                      .map((t) => {
+                        const isInc = t.type === 'INCOME';
+                        const d = new Date(t.date).toLocaleDateString('pt-BR');
+                        const shortId = t.id.substring(0, 8);
+                        return `<tr class="hover:bg-slate-800/40 transition-colors">
+                          <td class="py-3 font-semibold text-white flex items-center space-x-2">
+                            <span>${isInc ? '🟢' : '🔴'}</span>
+                            <span>${t.description}</span>
+                            <code class="text-[10px] text-slate-500 bg-slate-950 px-1 py-0.5 rounded font-mono">${shortId}</code>
+                          </td>
+                          <td class="py-3 text-slate-400">
+                            <span class="text-slate-300">${t.category}</span> • <span class="text-slate-500">${t.paymentMethod}</span>
+                          </td>
+                          <td class="py-3 text-slate-400">${d}</td>
+                          <td class="py-3 text-right font-bold ${isInc ? 'text-emerald-400' : 'text-rose-400'}">
+                            ${isInc ? '+' : '-'} R$ ${Number(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>`;
+                      })
+                      .join('')
+              }
+            </tbody>
+          </table>
         </div>
       </div>
+
     </div>
   </main>
 
@@ -364,16 +426,35 @@ function renderDashboardHtml(
     const qrImage = document.getElementById('qr-image');
     const qrSpinner = document.getElementById('qr-spinner');
 
+    const statTotal = document.getElementById('stat-total');
+    const statMonthCount = document.getElementById('stat-month-count');
+    const statPrevBalance = document.getElementById('stat-prev-balance');
+    const statPrevLabel = document.getElementById('stat-prev-label');
+    const statIncome = document.getElementById('stat-income');
+    const statIncomeLabel = document.getElementById('stat-income-label');
+    const statExpense = document.getElementById('stat-expense');
+    const statExpenseLabel = document.getElementById('stat-expense-label');
+    const statBalance = document.getElementById('stat-balance');
+    const transactionsBody = document.getElementById('transactions-body');
+
+    function formatBRL(val) {
+      return (Number(val) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
     evtSource.onmessage = function(event) {
       try {
-        const data = JSON.parse(event.data);
-        updateUI(data);
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'state') {
+          updateWhatsAppUI(payload.data);
+        } else if (payload.type === 'financialUpdate') {
+          updateFinancialUI(payload);
+        }
       } catch (err) {
         console.error('Erro ao processar evento SSE:', err);
       }
     };
 
-    function updateUI(data) {
+    function updateWhatsAppUI(data) {
       if (data.status === 'CONNECTED') {
         badgeStatus.className = 'inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
         badgeText.textContent = 'Conectado';
@@ -412,6 +493,67 @@ function renderDashboardHtml(
         qrImage.classList.add('hidden');
         qrSpinner.classList.remove('hidden');
         qrSpinner.classList.add('flex');
+      }
+    }
+
+    function updateFinancialUI(payload) {
+      const summary = payload.summary;
+      const total = payload.totalTransactions;
+      const recent = payload.recentTransactions || [];
+
+      // Atualiza valores nos cards
+      if (statTotal) statTotal.textContent = total;
+      if (statMonthCount) statMonthCount.textContent = summary.count + ' em ' + summary.monthName;
+
+      if (statPrevBalance) {
+        statPrevBalance.textContent = 'R$ ' + formatBRL(summary.previousBalance);
+        statPrevBalance.className = 'text-2xl font-bold stat-val ' + (summary.previousBalance >= 0 ? 'text-sky-400' : 'text-rose-400');
+      }
+      if (statPrevLabel) statPrevLabel.textContent = 'Até ' + summary.monthName;
+
+      if (statIncome) statIncome.textContent = 'R$ ' + formatBRL(summary.monthIncome);
+      if (statIncomeLabel) statIncomeLabel.textContent = 'Receitas (' + summary.monthName + ')';
+
+      if (statExpense) statExpense.textContent = 'R$ ' + formatBRL(summary.monthExpense);
+      if (statExpenseLabel) statExpenseLabel.textContent = 'Despesas (' + summary.monthName + ')';
+
+      if (statBalance) {
+        statBalance.textContent = 'R$ ' + formatBRL(summary.totalBalance);
+        statBalance.className = 'text-2xl font-black stat-val ' + (summary.totalBalance >= 0 ? 'text-emerald-400' : 'text-rose-400');
+      }
+
+      // Efeito visual de flash nos cards
+      const statsContainer = document.getElementById('stats-container');
+      if (statsContainer) {
+        statsContainer.classList.add('flash-update');
+        setTimeout(() => statsContainer.classList.remove('flash-update'), 1000);
+      }
+
+      // Atualiza a tabela de lançamentos recentes
+      if (transactionsBody) {
+        if (recent.length === 0) {
+          transactionsBody.innerHTML = '<tr><td colspan="4" class="py-8 text-center text-slate-500">Nenhum lançamento registrado ainda.</td></tr>';
+        } else {
+          transactionsBody.innerHTML = recent.map(t => {
+            const isInc = t.type === 'INCOME';
+            const d = new Date(t.date).toLocaleDateString('pt-BR');
+            const shortId = (t.id || '').substring(0, 8);
+            return '<tr class="hover:bg-slate-800/40 transition-colors animate-fade-in">' +
+              '<td class="py-3 font-semibold text-white flex items-center space-x-2">' +
+                '<span>' + (isInc ? '🟢' : '🔴') + '</span>' +
+                '<span>' + t.description + '</span>' +
+                '<code class="text-[10px] text-slate-500 bg-slate-950 px-1 py-0.5 rounded font-mono">' + shortId + '</code>' +
+              '</td>' +
+              '<td class="py-3 text-slate-400">' +
+                '<span class="text-slate-300">' + t.category + '</span> • <span class="text-slate-500">' + t.paymentMethod + '</span>' +
+              '</td>' +
+              '<td class="py-3 text-slate-400">' + d + '</td>' +
+              '<td class="py-3 text-right font-bold ' + (isInc ? 'text-emerald-400' : 'text-rose-400') + '">' +
+                (isInc ? '+' : '-') + ' R$ ' + formatBRL(t.amount) +
+              '</td>' +
+            '</tr>';
+          }).join('');
+        }
       }
     }
 

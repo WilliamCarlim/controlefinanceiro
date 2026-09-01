@@ -3,8 +3,12 @@ import { prisma } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
 import { startOfMonth, endOfMonth, startOfDay, endOfDay, subDays } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
+import { EventEmitter } from 'events';
 
 const TIME_ZONE = 'America/Sao_Paulo';
+
+// EventEmitter global para notificar alterações financeiras em tempo real (SSE)
+export const financialEvents = new EventEmitter();
 
 export const MONTH_NAMES_PT = [
   'Janeiro',
@@ -92,6 +96,9 @@ export async function createTransaction(
     '💾 Transação criada no banco de dados com sucesso.'
   );
 
+  // Emite evento em tempo real para atualizar o painel web
+  financialEvents.emit('change', { action: 'create', transaction });
+
   return transaction;
 }
 
@@ -154,7 +161,7 @@ export async function getMonthSummary(targetDate = new Date()): Promise<MonthSum
   };
 }
 
-export async function getRecentTransactions(limit = 5): Promise<Transaction[]> {
+export async function getRecentTransactions(limit = 10): Promise<Transaction[]> {
   return prisma.transaction.findMany({
     where: {
       isDeleted: false,
@@ -284,5 +291,9 @@ export async function deleteTransaction(
   });
 
   logger.info({ id: updated.id }, '🗑️ Transação marcada como excluída.');
+
+  // Emite evento em tempo real para atualizar o painel web
+  financialEvents.emit('change', { action: 'delete', transaction: updated });
+
   return updated;
 }
